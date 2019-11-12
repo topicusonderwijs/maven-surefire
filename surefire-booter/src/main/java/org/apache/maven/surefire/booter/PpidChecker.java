@@ -55,7 +55,7 @@ import static org.apache.maven.surefire.util.internal.StringUtils.NL;
  * @author <a href="mailto:tibordigana@apache.org">Tibor Digana (tibor17)</a>
  * @since 2.20.1
  */
-final class PpidChecker
+class PpidChecker
 {
     private static final int MINUTES_TO_MILLIS = 60 * 1000;
     // 25 chars https://superuser.com/questions/937380/get-creation-time-of-file-in-milliseconds/937401#937401
@@ -68,6 +68,8 @@ final class PpidChecker
     private static final String RELATIVE_PATH_TO_WMIC = "System32\\Wbem";
     private static final String SYSTEM_PATH_TO_WMIC =
             "%" + WINDOWS_SYSTEM_ROOT_ENV + "%\\" + RELATIVE_PATH_TO_WMIC + "\\";
+    private static final String PS_ETIME_HEADER = "ELAPSED";
+    private static final String PS_PID_HEADER = "PID";
 
     private final Queue<Process> destroyableCommands = new ConcurrentLinkedQueue<>();
 
@@ -83,6 +85,7 @@ final class PpidChecker
 
     private volatile ProcessInfo parentProcessInfo;
     private volatile boolean stopped;
+    private volatile boolean isFirstCheckFailed;
 
     PpidChecker( @Nonnull String ppid )
     {
@@ -91,7 +94,7 @@ final class PpidChecker
 
     boolean canUse()
     {
-        if ( isStopped() )
+        if ( isStopped() || isFirstCheckFailed )
         {
             return false;
         }
@@ -121,8 +124,12 @@ final class PpidChecker
             checkProcessInfo();
 
             // let's compare creation time, should be same unless killed or PID is reused by OS into another process
-            return !parentProcessInfo.isInvalid()
+            boolean isAlive = !parentProcessInfo.isInvalid()
                     && ( previousInfo == null || parentProcessInfo.isTimeEqualTo( previousInfo ) );
+
+            fireOnFirstCommandFailure( previousInfo, isAlive );
+
+            return isAlive;
         }
         else if ( IS_OS_UNIX )
         {
@@ -130,11 +137,27 @@ final class PpidChecker
             checkProcessInfo();
 
             // let's compare elapsed time, should be greater or equal if parent process is the same and still alive
-            return !parentProcessInfo.isInvalid()
+            boolean isAlive = !parentProcessInfo.isInvalid()
                     && ( previousInfo == null || !parentProcessInfo.isTimeBefore( previousInfo ) );
+
+            fireOnFirstCommandFailure( previousInfo, isAlive );
+
+            return isAlive;
         }
         parentProcessInfo = ERR_PROCESS_INFO;
         throw new IllegalStateException( "unknown platform or you did not call canUse() before isProcessAlive()" );
+    }
+
+    private void fireOnFirstCommandFailure( ProcessInfo previousInfo, boolean isAlive )
+    {
+        if ( !isFirstCheckFailed )
+        {
+            isFirstCheckFailed = previousInfo == null && !isAlive;
+            if ( isFirstCheckFailed )
+            {
+                throw new IllegalStateException( "irrelevant to call isProcessAlive(), first check failed" );
+            }
+        }
     }
 
     private void checkProcessInfo()
@@ -168,20 +191,27 @@ final class PpidChecker
             {
                 if ( previousOutputLine.isInvalid() )
                 {
-                    Matcher matcher = UNIX_CMD_OUT_PATTERN.matcher( line );
-                    if ( matcher.matches() && ppid.equals( fromPID( matcher ) ) )
+                    if ( hasHeader )
                     {
-                        long pidUptime = fromDays( matcher )
-                                                 + fromHours( matcher )
-                                                 + fromMinutes( matcher )
-                                                 + fromSeconds( matcher );
-                        return unixProcessInfo( ppid, pidUptime );
+                        Matcher matcher = UNIX_CMD_OUT_PATTERN.matcher( line );
+                        if ( matcher.matches() && ppid.equals( fromPID( matcher ) ) )
+                        {
+                            long pidUptime = fromDays( matcher )
+                                                     + fromHours( matcher )
+                                                     + fromMinutes( matcher )
+                                                     + fromSeconds( matcher );
+                            return unixProcessInfo( ppid, pidUptime );
+                        }
+                        matcher = BUSYBOX_CMD_OUT_PATTERN.matcher( line );
+                        if ( matcher.matches() && ppid.equals( fromBusyboxPID( matcher ) ) )
+                        {
+                            long pidUptime = fromBusyboxHours( matcher ) + fromBusyboxMinutes( matcher );
+                            return unixProcessInfo( ppid, pidUptime );
+                        }
                     }
-                    matcher = BUSYBOX_CMD_OUT_PATTERN.matcher( line );
-                    if ( matcher.matches() && ppid.equals( fromBusyboxPID( matcher ) ) )
+                    else
                     {
-                        long pidUptime = fromBusyboxHours( matcher ) + fromBusyboxMinutes( matcher );
-                        return unixProcessInfo( ppid, pidUptime );
+                        hasHeader = line.contains( PS_ETIME_HEADER ) && line.contains( PS_PID_HEADER );
                     }
                 }
                 return previousOutputLine;
@@ -195,8 +225,6 @@ final class PpidChecker
     {
         ProcessInfoConsumer reader = new ProcessInfoConsumer( "US-ASCII" )
         {
-            private boolean hasHeader;
-
             @Override
             @Nonnull
             ProcessInfo consumeLine( String line, ProcessInfo previousProcessInfo ) throws Exception
@@ -372,6 +400,8 @@ final class PpidChecker
     {
         private final String charset;
 
+        boolean hasHeader;
+
         ProcessInfoConsumer( String charset )
         {
             this.charset = charset;
@@ -409,15 +439,18 @@ final class PpidChecker
                     DumpErrorSingleton.getSingleton()
                             .dumpText( out.toString() );
                 }
-                return isStopped() ? ERR_PROCESS_INFO : exitCode == 0 ? processInfo : INVALID_PROCESS_INFO;
+                return isStopped() ? ERR_PROCESS_INFO : ( exitCode == 0 ? processInfo : INVALID_PROCESS_INFO );
             }
             catch ( Exception e )
             {
-                DumpErrorSingleton.getSingleton()
-                        .dumpText( out.toString() );
+                if ( !( e instanceof InterruptedException ) && !( e.getCause() instanceof InterruptedException ) )
+                {
+                    DumpErrorSingleton.getSingleton()
+                            .dumpText( out.toString() );
 
-                DumpErrorSingleton.getSingleton()
-                        .dumpException( e );
+                    DumpErrorSingleton.getSingleton()
+                            .dumpException( e );
+                }
 
                 return ERR_PROCESS_INFO;
             }

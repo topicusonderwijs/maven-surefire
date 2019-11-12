@@ -171,11 +171,28 @@ public class PpidCheckerTest
     {
         PpidChecker checker = new PpidChecker( "1000000" );
 
+        setInternalState( checker, "parentProcessInfo", ProcessInfo.unixProcessInfo( "", 0L ) );
+
         assertThat( checker.canUse() )
                 .isTrue();
 
         assertThat( checker.isProcessAlive() )
                 .isFalse();
+    }
+
+    @Test
+    public void shouldFailFirstCheck()
+    {
+        PpidChecker checker = new PpidChecker( "1000000" );
+
+        assertThat( checker.canUse() )
+                .isTrue();
+
+        exceptions.expect( IllegalStateException.class );
+        exceptions.expectMessage( "irrelevant to call isProcessAlive(), first check failed" );
+
+        checker.isProcessAlive();
+
     }
 
     @Test
