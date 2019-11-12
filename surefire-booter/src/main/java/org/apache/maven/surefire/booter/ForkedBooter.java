@@ -231,7 +231,7 @@ public final class ForkedBooter
                                         + NL
                                         + generateThreadDump() );
 
-                        kill();
+                        // kill();
                     }
                 }
                 catch ( RuntimeException e )
@@ -318,7 +318,7 @@ public final class ForkedBooter
                                         + NL
                                         + generateThreadDump() );
 
-                        kill();
+                        // kill();
                     }
                 }
             }
