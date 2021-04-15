@@ -32,14 +32,17 @@ import org.apache.maven.surefire.extensions.util.LineConsumerThread;
 import javax.annotation.Nonnull;
 import java.io.Closeable;
 import java.io.IOException;
+import java.net.BindException;
 import java.net.InetAddress;
 import java.net.InetSocketAddress;
 import java.net.SocketOption;
 import java.nio.Buffer;
 import java.nio.ByteBuffer;
+import java.nio.channels.AlreadyBoundException;
 import java.nio.channels.AsynchronousServerSocketChannel;
 import java.nio.channels.AsynchronousSocketChannel;
 import java.nio.channels.ReadableByteChannel;
+import java.nio.channels.UnsupportedAddressTypeException;
 import java.nio.channels.WritableByteChannel;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.ExecutorService;
@@ -87,12 +90,38 @@ final class SurefireForkChannel extends ForkChannel
         super( arguments );
         server = open( withThreadPool( THREAD_POOL ) );
         setTrueOptions( SO_REUSEADDR, TCP_NODELAY, SO_KEEPALIVE );
-        InetAddress ip = InetAddress.getLoopbackAddress();
-        server.bind( new InetSocketAddress( ip, 0 ), 1 );
-        InetSocketAddress localAddress = (InetSocketAddress) server.getLocalAddress();
+        InetSocketAddress localAddress = bindSocketAddress();
         localHost = localAddress.getHostString();
         localPort = localAddress.getPort();
         sessionId = arguments.getSessionId();
+    }
+
+    private InetSocketAddress bindSocketAddress() throws IOException
+    {
+        InetSocketAddress localLoopback = findLocalAddress( InetAddress.getLoopbackAddress() );
+        if ( localLoopback != null )
+        {
+            return localLoopback;
+        }
+        InetSocketAddress localhost = findLocalAddress( InetAddress.getLocalHost() );
+        if ( localhost != null )
+        {
+            return localhost;
+        }
+        throw new IOException( "Could not find local IP address." );
+    }
+
+    private InetSocketAddress findLocalAddress( InetAddress ip ) throws IOException
+    {
+        try
+        {
+            server.bind( new InetSocketAddress( ip, 0 ), 1 );
+            return (InetSocketAddress) server.getLocalAddress();
+        }
+        catch ( BindException | AlreadyBoundException | UnsupportedAddressTypeException e )
+        {
+            return null;
+        }
     }
 
     @Override
