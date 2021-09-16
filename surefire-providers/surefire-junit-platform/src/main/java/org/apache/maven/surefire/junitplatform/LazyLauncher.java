@@ -79,6 +79,8 @@ class LazyLauncher implements Launcher, AutoCloseable
         if ( launcherSession != null )
         {
             launcherSession.close();
+            launcherSession = null;
         }
+        launcher = null;
     }
 }
